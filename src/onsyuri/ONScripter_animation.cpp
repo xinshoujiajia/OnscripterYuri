@@ -24,12 +24,89 @@
 
 #include "ONScripter.h"
 #include "Utils.h"
+#ifdef WEB
+#include "DirectReader.h"
+#endif
+#if defined(WEB)
+#include <emscripten.h>
+#include <new>
+#endif
 #ifdef USE_BUILTIN_LAYER_EFFECTS
 #include "builtin_layer.h"
 #endif
 
 #define DEFAULT_CURSOR_WAIT    ":l/3,160,2;cursor0.bmp"
 #define DEFAULT_CURSOR_NEWPAGE ":l/3,160,2;cursor1.bmp"
+
+#if defined(WEB)
+// Decode large multi-cell sprite sheets in a Web Worker so the WASM main
+// thread stays responsive (SDL audio keeps being pumped during the wait).
+// Returns NULL on any problem; caller then falls back to the synchronous path.
+SDL_Surface *ONScripter::loadLargeSpriteAsync(const char *filename, int num_of_cells,
+                                              Uint32 texture_format, bool *has_alpha,
+                                              int *location)
+{
+    if (!EM_ASM_INT(return (typeof self.__onsSprite !== "undefined" && self.__onsSprite.available()) ? 1 : 0;))
+        return NULL;
+
+    // 0 = ARGB8888 (engine default), 1 = ABGR8888
+    int format = (texture_format == SDL_PIXELFORMAT_ABGR8888) ? 1 : 0;
+
+    // 引擎内部的资源路径是脚本原编码（GBK / Shift-JIS），不是 UTF-8。
+    // 同步 loadImage 最后会走 DirectReader::open()，那里用 convertCodingToUTF8()
+    // 现场把路径转成 UTF-8；这条 EM_ASM 桥绕过了它，若直接 UTF8ToString()，
+    // 中文/日文文件名会解成乱码 -> JS 侧查不到索引、fetch 404 ->
+    // 异步解码失败退化成同步解码（一张 94 帧的图要 1.8 秒，音频断供）。
+    size_t fn_len = strlen(filename);
+    char *utf8_name = new(std::nothrow) char[fn_len * 3 + 1];
+    const char *submit_name = filename;
+    if (utf8_name){
+        DirectReader::convertCodingToUTF8(utf8_name, filename);
+        submit_name = utf8_name;
+    }
+
+    int id = EM_ASM_INT(
+        return self.__onsSprite.submit(UTF8ToString($0), $1, $2);
+    , submit_name, num_of_cells, format);
+
+    if (utf8_name) delete[] utf8_name;
+
+    if (id == 0) return NULL;
+
+    // Yield to the browser event loop while decoding; SDL_Delay uses
+    // emscripten_sleep under ASYNCIFY, so audio continues to be serviced.
+    while (!EM_ASM_INT(return self.__onsSprite.isReady($0);, id))
+        SDL_Delay(5);
+
+    if (!EM_ASM_INT(return self.__onsSprite.ok($0) ? 1 : 0;, id)){
+        EM_ASM( self.__onsSprite.cleanup($0); , id);
+        return NULL;
+    }
+
+    int w = EM_ASM_INT(return self.__onsSprite.w($0);, id);
+    int h = EM_ASM_INT(return self.__onsSprite.h($0);, id);
+    int bytes = EM_ASM_INT(return self.__onsSprite.bytes($0);, id);
+    if (w <= 0 || h <= 0 || bytes != w * h * 4){
+        EM_ASM( self.__onsSprite.cleanup($0); , id);
+        return NULL;
+    }
+
+    SDL_Surface *surface = AnimationInfo::allocSurface(w, h, texture_format);
+    if (surface && SDL_MUSTLOCK(surface)) SDL_LockSurface(surface);
+    if (surface){
+        // Pass the surface pitch: SDL may pad rows, and the decoded buffer is
+        // tightly packed, so the copy has to respect the destination stride.
+        EM_ASM( self.__onsSprite.copyTo($0, $1, $2); , id, (int)surface->pixels, (int)surface->pitch);
+    }
+    if (surface && SDL_MUSTLOCK(surface)) SDL_UnlockSurface(surface);
+
+    EM_ASM( self.__onsSprite.cleanup($0); , id);
+
+    if (has_alpha) *has_alpha = true;
+    if (location)  *location  = BaseReader::ARCHIVE_TYPE_NONE;
+    return surface;
+}
+#endif
 
 int ONScripter::calcDurationToNextAnimation()
 {
@@ -230,7 +307,18 @@ void ONScripter::setupAnimationInfo( AnimationInfo *anim, FontInfo *info )
     else{
         bool has_alpha;
         int location;
-        SDL_Surface *surface = loadImage( anim->file_name, &has_alpha, &location, &anim->default_alpha );
+        SDL_Surface *surface = NULL;
+#if defined(WEB)
+        // Offload only big multi-cell sheets: those are the ones that stall audio.
+        if (anim->num_of_cells > 1){
+            unsigned long flen = script_h.cBR->getFileLength(anim->file_name);
+            if (flen > 3000000)
+                surface = loadLargeSpriteAsync(anim->file_name, anim->num_of_cells,
+                                               texture_format, &has_alpha, &location);
+        }
+#endif
+        if (!surface)
+            surface = loadImage( anim->file_name, &has_alpha, &location, &anim->default_alpha );
 
         SDL_Surface *surface_m = NULL;
         if (anim->trans_mode == AnimationInfo::TRANS_MASK)

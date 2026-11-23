@@ -487,6 +487,10 @@ private:
     int  calcDurationToNextAnimation();
     void proceedAnimation(int current_time);
     void setupAnimationInfo(AnimationInfo *anim, FontInfo *info=NULL);
+#if defined(WEB)
+    SDL_Surface *loadLargeSpriteAsync(const char *filename, int num_of_cells, Uint32 texture_format,
+                                      bool *has_alpha, int *location);
+#endif
     void parseTaggedString(AnimationInfo *anim );
     void drawTaggedSurface(SDL_Surface *dst_surface, AnimationInfo *anim, SDL_Rect &clip);
     void stopAnimation(int click);
