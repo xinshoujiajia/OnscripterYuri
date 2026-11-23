@@ -36,7 +36,9 @@ extern "C" int mkdir_ons(const char *path, mode_t mode);
 
 #if defined(WEB)
 extern "C" FILE *fopen_ons(const char *str, const char *mode);
+extern "C" int fclose_ons(FILE *fp);
 #define fopen fopen_ons
+#define fclose fclose_ons
 #endif
 
 #ifndef SEEK_END

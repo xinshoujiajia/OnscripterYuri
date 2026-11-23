@@ -259,8 +259,13 @@ extern "C" void playVideoIOS(const char *filename, bool click_flag, bool loop_fl
 
 #if defined(WEB)
 #include <emscripten.h>
+#include <string>
+#include <map>
 
 #undef fopen
+#undef fclose
+
+static std::map<FILE *, std::string> g_onsyuri_memfile_paths;
 
 /*
 * fetch the file from server beforce fopen for lazyload
@@ -318,8 +323,6 @@ FILE *fopen_ons(const char *path, const char *mode)
             }
             case 2:
             {
-                // printf(" already loaded!\n");
-                return fp;
                 break;
             }
         }
@@ -331,9 +334,48 @@ FILE *fopen_ons(const char *path, const char *mode)
         {
             SDL_Delay(5); // wait for async function
         }
+        if(EM_ASM_INT(
+            var path = g_onsyuri_module.UTF8ToString($0);
+            var key = path.toLowerCase();
+            return g_onsyuri_filemap[key].failed;, path))
+        {
+            return NULL;
+        }
+
         fp = fopen(path, mode); // reload after fetch
+        if(fp)
+        {
+            g_onsyuri_memfile_paths[fp] = std::string(path);
+        }
     }
     return fp;
+}
+
+extern "C" int fclose_ons(FILE *fp)
+{
+    std::map<FILE *, std::string>::iterator it = g_onsyuri_memfile_paths.find(fp);
+    if(it == g_onsyuri_memfile_paths.end())
+    {
+        return fclose(fp);
+    }
+
+    int ret = fclose(fp);
+    const char *path = it->second.c_str();
+    g_onsyuri_memfile_paths.erase(it);
+    EM_ASM(
+        var path = g_onsyuri_module.UTF8ToString($0);
+        var key = path.toLowerCase();
+        var node = g_onsyuri_filemap && g_onsyuri_filemap[key];
+        if(node) {
+            try {
+                g_onsyuri_module.FS.unlink(key);
+            } catch(e) {
+            }
+            node.loaded = false;
+            node.failed = false;
+        }
+    , path);
+    return ret;
 }
 
 extern "C" void playVideoWeb(const char *path, bool click_flag, bool loop_flag)

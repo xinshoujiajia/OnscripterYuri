@@ -257,10 +257,16 @@
                         fetch(fnode.url).then( (resp)=>{
                             return resp.arrayBuffer();
                         }).then((data)=>{
-                            _FS.writeFile(path, new Uint8Array(data));
-                            fnode.loaded = true;
-                            fnode.failed = false;
-                            res(1);
+                            try {
+                                _FS.writeFile(path, new Uint8Array(data));
+                                fnode.loaded = true;
+                                fnode.failed = false;
+                                res(1);
+                            } catch(err) {
+                                console.log(`## fetch_file writeFile ${path}`, err);
+                                fnode.failed = true;
+                                res(-1);
+                            }
                         }).catch((err)=>{
                             console.log(`## fetch_file ${path}`, err);
                             fnode.failed = true;
@@ -280,6 +286,8 @@
             var g_onsyuri_module  = {}; // onsyuri c module, FS and configure are here
 
         </script>
+
+        <script type="text/javascript" src="sprite_decode.js"></script>
 
         <script type="text/javascript"> // onsyuri module
             g_onsyuri_module.canvas = (()=>{return document.getElementById('canvas');})();
